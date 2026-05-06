@@ -33,6 +33,7 @@ func (c *Client) ReadPump(){
 			}
 			if message.Type == "CHAT"{
 				message.Status = "delivered"
+				if c.ActiveChatID == message.ChatID{message.Status = "read"}
 				message.ReceivedTime = time.Now()
 				message.UpdatedAt = time.Now()
 				go c.updateMessage(message);
@@ -41,7 +42,7 @@ func (c *Client) ReadPump(){
 					ChatID: message.ChatID,
 					SenderID: message.ReceiverID,
 					ReceiverID: message.SenderID,
-					Status: "delivered",
+					Status: message.Status,
 					Type: "UPDATE_STATUS",
 				}
 				c.Hub.Broadcast <- updateStatus
