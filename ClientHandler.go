@@ -58,6 +58,12 @@ func (s *Server) ClientHandler(w http.ResponseWriter, r *http.Request){
 }
 
 func (s *Server) FetchHistory(w http.ResponseWriter, r *http.Request){
+	userIDStr := r.URL.Query().Get("userID");
+	userID, err := bson.ObjectIDFromHex(userIDStr);
+	if err != nil{
+		http.Error(w, "Wrong ID Format", http.StatusBadRequest)
+		return
+	}
 	chatIDStr := r.URL.Query().Get("chatID")
 	chatID, err := bson.ObjectIDFromHex(chatIDStr);
 	if err != nil{
@@ -89,20 +95,56 @@ func (s *Server) FetchHistory(w http.ResponseWriter, r *http.Request){
 		log.Print("Could not fetch chat history", err)
 		return
 	}
-	
+
 	var messages []Message = []Message{}
 	err = cursor.All(context.TODO(), &messages)
 	if err != nil{
-		log.Println("Could not retrieve messages")
+		http.Error(w, "Could not retrieve messages", http.StatusInternalServerError)
 		return
 	}
+
+	for i, message := range(messages){
+		if message.ReceiverID == userID && message.Status != "read"{
+			updateStatus := Message{
+				ID: message.ID,
+				ChatID: message.ChatID,
+				SenderID: message.ReceiverID,
+				ReceiverID: message.SenderID,
+				Status: "read",
+				Type: "UPDATE_STATUS",
+			}
+			messages[i].Status = "read"
+			s.Hub.Broadcast <- updateStatus
+		}
+	}
+
+	filter = bson.M{
+		"chatId": chatID,
+		"receiverId": bson.M{"$eq": userID},
+		"status": bson.M{"$ne": "read"},
+		"updatedAt": bson.M{"$lt": messages[0].UpdatedAt},
+	}
+	update := bson.M{
+		"$set": bson.M{
+			"status": "read",
+			"readTime": time.Now(),
+			"updatedAt": time.Now(),
+		},
+	} 
+
+	_, err = s.MessageCollection.UpdateMany(context.TODO(), filter, update);
+	if err != nil{
+		log.Println("Could not update all messages to Read");
+		return
+	}
+	
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(&messages)
 }
 
 func (s *Server) FetchChats(w http.ResponseWriter, r *http.Request){
-	clientIDStr := r.URL.Query().Get("userID");
-	clientID, err := bson.ObjectIDFromHex(clientIDStr);
+	userIDStr := r.URL.Query().Get("userID");
+	userID, err := bson.ObjectIDFromHex(userIDStr);
 	limit, _ := strconv.ParseInt(r.URL.Query().Get("limit"), 10, 64);
 	if limit <= 0{
 		limit = int64(20);
@@ -115,7 +157,7 @@ func (s *Server) FetchChats(w http.ResponseWriter, r *http.Request){
 		log.Println("Wrong User ID Format")
 		return
 	}
-	filter := bson.D{{Key:"participants", Value:clientID}}
+	filter := bson.D{{Key:"participants", Value:userID}}
 	beforeStr := r.URL.Query().Get("before")
 	if beforeStr != ""{
 		lastTime, err := time.Parse(time.RFC3339, beforeStr)
@@ -124,7 +166,7 @@ func (s *Server) FetchChats(w http.ResponseWriter, r *http.Request){
 			return
 		}
 		filter = bson.D{
-			{Key:"participants", Value:clientID},
+			{Key:"participants", Value:userID},
 			{Key:"updatedAt", Value:bson.M{"$lt":lastTime}},
 		}
 	}
@@ -140,6 +182,52 @@ func (s *Server) FetchChats(w http.ResponseWriter, r *http.Request){
 	if err := cursor.All(context.TODO(), &chats); err != nil{
 		http.Error(w, "Error decoding chats", http.StatusInternalServerError)
         return
+	}
+
+	filter = bson.D{
+		{Key:"receiverId", Value:bson.M{"$eq": userID}},
+		{Key: "status", Value:bson.M{"$eq": "sent"}},
+	}
+	cursor, err = s.MessageCollection.Find(context.TODO(), filter)
+	if err != nil{
+		log.Println("Could not fetch messages")
+		return
+	}
+	
+	var messages []Message = []Message{}
+	if err := cursor.All(context.TODO(), &messages); err != nil{
+		http.Error(w, "Error decoding messages", http.StatusInternalServerError)
+        return
+	}
+
+	for i, message := range(messages){
+		if message.ReceiverID == userID && message.Status == "sent"{
+			updateStatus := Message{
+				ID: message.ID,
+				ChatID: message.ChatID,
+				SenderID: message.ReceiverID,
+				ReceiverID: message.SenderID,
+				Status: "delivered",
+				Type: "UPDATE_STATUS",
+			}
+			messages[i].ReceivedTime = time.Now()
+			messages[i].Status = "delivered"
+			s.Hub.Broadcast <- updateStatus
+		}
+	}
+
+	update := bson.M{
+		"$set": bson.M{
+			"status": "delivered",
+			"receivedTime": time.Now(),
+			"updatedAt": time.Now(),
+		},
+	} 
+
+	_, err = s.MessageCollection.UpdateMany(context.TODO(), filter, update);
+	if err != nil{
+		log.Println("Could not update all messages to Read");
+		return
 	}
 	
 	w.Header().Set("Content-Type", "application/json")
