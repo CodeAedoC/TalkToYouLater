@@ -71,12 +71,12 @@ func (c *Client) WritePump(){
 		message.Status = "sent"
 		message.SentTime = time.Now()
 		message.UpdatedAt = time.Now()
-		go c.saveMessave(message)
+		go c.saveMessage(message)
 		c.Hub.Broadcast <- message
 	}
 }
 
-func (c *Client) saveMessave(message Message){
+func (c *Client) saveMessage(message Message){
 	_, err := c.MessageCollection.InsertOne(context.TODO(), message)
 	if err != nil{
 		log.Println("Could not write to Database")
@@ -110,7 +110,7 @@ func (c *Client) updateMessage(message Message){
 	
 	_, err := c.MessageCollection.UpdateOne(context.TODO(), filter, updates)
 	if err != nil{
-		log.Println("Could not Message to Database", err)
+		log.Println("Could not Update Message in Database", err)
 		return
 	}
 	
@@ -124,7 +124,7 @@ func (c *Client) updateMessage(message Message){
 		}
 		_, err := c.ChatCollection.UpdateOne(context.TODO(), filterChat, updateChat)
 		if err != nil{
-			log.Println("Could not write to Database", err)
+			log.Println("Could not Update Chat in Database", err)
 			return
 		}
 	}

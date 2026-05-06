@@ -20,7 +20,7 @@ type Server struct{
 	ChatCollection *mongo.Collection
 }
 
-func (s *Server)ClientHandler (w http.ResponseWriter, r *http.Request){
+func (s *Server) ClientHandler(w http.ResponseWriter, r *http.Request){
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {return true},
 	}
@@ -174,4 +174,68 @@ func (s *Server) CreateChat(w http.ResponseWriter, r *http.Request){
 	
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(&newChat);
+}
+
+func (s *Server) UploadHandler(w http.ResponseWriter, r *http.Request){
+	if r.Method != "POST"{
+		http.Error(w, "Use POST Method", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	var MAX_UPLOAD_SIZE int64 = 10 * 1024 * 1024//10MB
+	r.Body = http.MaxBytesReader(w, r.Body, MAX_UPLOAD_SIZE);
+
+	err := r.ParseMultipartForm(32 * 1024 * 1024)//32MB
+	if err != nil{
+		http.Error(w, "File too large or invalid request", http.StatusRequestEntityTooLarge)
+		return
+	}
+	
+	file, header, err := r.FormFile("file");
+	if err != nil{
+		http.Error(w, "Upload Failed", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	if header.Size > MAX_UPLOAD_SIZE{
+		http.Error(w, "File is larger than 10MB", http.StatusBadRequest)
+		return
+	}
+
+	fileID, err := bucket.UploadFromStream(context.TODO(), header.Filename, file)
+	if err != nil{
+		http.Error(w, "Could save file to DB", http.StatusInternalServerError);
+		return
+	}
+
+	newMediaInfo := MediaInfo{
+		FileName: header.Filename,
+		FileSize: header.Size,
+		URL: "/download/" + fileID.Hex(),
+		FileID: fileID.Hex(),
+	}
+	
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(&newMediaInfo)
+}
+
+func (s *Server) DownloadHandler(w http.ResponseWriter, r*http.Request){
+	if r.Method != "GET"{
+		http.Error(w, "Use GET Method", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	fileIDStr := r.PathValue("id")
+	fileID, err := bson.ObjectIDFromHex(fileIDStr)
+	if err != nil{
+		http.Error(w, "Wrong File ID", http.StatusBadRequest)
+		return
+	}
+	
+	_, err = bucket.DownloadToStream(context.TODO(), fileID, w);
+	if err != nil{
+		http.Error(w, "File not Found", http.StatusInternalServerError);
+		return
+	}
 }
