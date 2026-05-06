@@ -42,7 +42,7 @@ func (s *Server) ClientHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := Client{
+	client := &Client{
 		ID:                clientID,
 		Conn:              conn,
 		ActiveChatID:      chatID,
@@ -73,6 +73,7 @@ func (s *Server) FetchHistory(w http.ResponseWriter, r *http.Request) {
 	limit, err := strconv.ParseInt(r.URL.Query().Get("limit"), 10, 64)
 	if err != nil {
 		http.Error(w, "Please provide a number as the limit", http.StatusBadRequest)
+		return
 	}
 	if limit < 0 {
 		limit = 20
@@ -196,11 +197,11 @@ func (s *Server) FetchChats(w http.ResponseWriter, r *http.Request) {
 	var message Message
 	messageVal := s.MessageCollection.FindOne(context.TODO(), filter)
 	err = messageVal.Decode(&message)
-	if err != nil{
-		if err == mongo.ErrNoDocuments{
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
 			log.Println("No such message found")
-		}else{
-			log.Println("Could not decode message");
+		} else {
+			log.Println("Could not decode message")
 		}
 		return
 	}

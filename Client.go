@@ -20,13 +20,13 @@ type Client struct{
 	ChatCollection *mongo.Collection
 }
 
-func (c *Client) ReadPump(){
+func (c *Client) WritePump(){
 	for{
 		if message, ok := <-c.Send; ok{
 			err := c.Conn.WriteJSON(message)
 			if err != nil{
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseNormalClosure, websocket.CloseAbnormalClosure){
-					c.Hub.Leave <- *c
+					c.Hub.Leave <- c
 				}
 				log.Println("Error while sending the message")
 				return
@@ -53,9 +53,9 @@ func (c *Client) ReadPump(){
 	}
 }
 
-func (c *Client) WritePump(){
+func (c *Client) ReadPump(){
 	defer func(){
-		c.Hub.Leave <- *c
+		c.Hub.Leave <- c
 		c.Conn.Close()
 	}()
 	
