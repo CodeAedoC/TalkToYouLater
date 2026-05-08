@@ -1,11 +1,11 @@
 services:
   # The Chat Application
   chat-app:
-    build: .
+    build: ./backend
     ports:
       - "8080"
     env_file:
-      - .env
+      - ./backend/.env
     depends_on:
       - mongodb
       - redis

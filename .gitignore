@@ -1,1 +1,15 @@
-.env
+# Secrets
+**/.env
+**/.env.local
+
+# Backend
+backend/main
+backend/bin/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.eslintcache
+
+# OS junk
+.DS_Store
