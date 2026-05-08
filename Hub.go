@@ -1,13 +1,17 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"log"
 
+	"github.com/redis/go-redis/v9"
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 type Hub struct {
 	ActiveClientList map[bson.ObjectID]map[*Client]bool
+	RedisClient 	 *redis.Client
 	Join             chan *Client
 	Leave            chan *Client
 	Broadcast        chan Message
@@ -31,12 +35,24 @@ func (h *Hub) Run() {
 			}
 			log.Println("Client Left")
 		case message := <-h.Broadcast:
-			log.Println("The message has reached the hub")
-			if clients, ok := h.ActiveClientList[message.ReceiverID]; ok {
-				log.Println("Found user sending message")
-				for client := range clients {
-					client.Send <- message
-				}
+			payload, _ := json.Marshal(message)
+			h.RedisClient.Publish(context.TODO(), "chat_room", payload)
+		}
+	}
+}
+
+func (h *Hub) ListenToRedis(){
+	pubsub := h.RedisClient.Subscribe(context.TODO(), "chat_room")
+	defer pubsub.Close()
+
+	ch := pubsub.Channel()
+	for msg := range ch{
+		var message Message
+		json.Unmarshal([]byte(msg.Payload), &message)
+
+		if clients, ok := h.ActiveClientList[message.ReceiverID]; ok{
+			for client := range clients{
+				client.Send <- message
 			}
 		}
 	}

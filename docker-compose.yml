@@ -1,0 +1,28 @@
+services:
+  # The Chat Application
+  chat-app:
+    build: .
+    ports:
+      - "8080"
+    env_file:
+      - .env
+    depends_on:
+      - mongodb
+      - redis
+
+  # MongoDB Service
+  mongodb:
+    image: mongo:latest
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  # Redis Service
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  mongo_data:
