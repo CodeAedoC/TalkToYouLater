@@ -202,8 +202,8 @@ func (s *Server) FetchChats(w http.ResponseWriter, r *http.Request) {
 			log.Println("No such message found")
 		} else {
 			log.Println("Could not decode message")
+			return
 		}
-		return
 	}
 
 	if message.ReceiverID == userID && message.Status == "sent" {

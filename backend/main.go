@@ -13,6 +13,20 @@ import (
 
 var bucket *mongo.GridFSBucket
 
+func enableCORS(next http.Handler) http.Handler{
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request){
+		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:5173")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+		if r.Method == "OPTIONS"{
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		next.ServeHTTP(w, r);
+	})
+}
+
 func main(){
 	_ = godotenv.Load()
 	serverAPI := options.ServerAPI(options.ServerAPIVersion1)
@@ -39,11 +53,12 @@ func main(){
 
 	go hub.ListenToRedis();
 	go hub.Run();
-	http.HandleFunc("/ws", server.ClientHandler)
-	http.HandleFunc("/fetchHistory", server.FetchHistory)
-	http.HandleFunc("/fetchChats", server.FetchChats)
-	http.HandleFunc("/createChat", server.CreateChat)
-	http.HandleFunc("/upload", server.UploadHandler)
-	http.HandleFunc("/download/{id}", server.DownloadHandler)
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	mux := http.NewServeMux();
+	mux.HandleFunc("/ws", server.ClientHandler)
+	mux.HandleFunc("/fetchHistory", server.FetchHistory)
+	mux.HandleFunc("/fetchChats", server.FetchChats)
+	mux.HandleFunc("/createChat", server.CreateChat)
+	mux.HandleFunc("/upload", server.UploadHandler)
+	mux.HandleFunc("/download/{id}", server.DownloadHandler)
+	log.Fatal(http.ListenAndServe(":8080", enableCORS(mux)))
 }
