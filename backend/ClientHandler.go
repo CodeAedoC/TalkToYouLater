@@ -18,6 +18,15 @@ type Server struct {
 	Hub               *Hub
 	MessageCollection *mongo.Collection
 	ChatCollection    *mongo.Collection
+	UserCollection    *mongo.Collection
+}
+
+type ChatResponse struct {
+		ID                bson.ObjectID   `json:"id"`
+		Participants      []bson.ObjectID `json:"participants"`
+		OtherParticipants []User          `json:"otherParticipants"`
+		LastMessage       *Message        `json:"lastMessage"`
+		UpdatedAt         time.Time       `json:"updatedAt"`
 }
 
 func (s *Server) ClientHandler(w http.ResponseWriter, r *http.Request) {
@@ -176,15 +185,40 @@ func (s *Server) FetchChats(w http.ResponseWriter, r *http.Request) {
 			{Key: "updatedAt", Value: bson.M{"$lt": lastTime}},
 		}
 	}
-	opts := options.Find().SetLimit(limit).SetSort(bson.D{{Key: "updatedAt", Value: -1}})
-	cursor, err := s.ChatCollection.Find(context.TODO(), filter, opts)
+
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: filter}},
+		{{Key: "$sort", Value: bson.D{{Key: "updatedAt", Value: -1}}}},
+		{{Key: "$limit", Value: limit}},
+
+		{{Key: "$lookup", Value: bson.D{
+			{Key: "from", Value: "Users"},
+			{Key: "localField", Value: "participants"},
+			{Key: "foreignField", Value: "_id"},
+			{Key: "as", Value: "otherParticipants"},
+		}}},
+
+		{{Key: "$set", Value: bson.D{
+			{Key: "otherParticipants", Value: bson.D{
+				{Key: "$filter", Value: bson.D{
+					{Key: "input", Value: "$otherParticipants"},
+					{Key: "as", Value: "p"},
+					{Key: "cond", Value: bson.D{
+						{Key: "$ne", Value: bson.A{"$$p._id", userID}},
+					}},
+				}},
+			}},
+		}}},
+	}
+
+	cursor, err := s.ChatCollection.Aggregate(context.TODO(), pipeline)
 	if err != nil {
 		log.Println("Could not fetch chats")
 		return
 	}
 	defer cursor.Close(context.TODO())
 
-	var chats []Chat = []Chat{}
+	var chats []ChatResponse = []ChatResponse{}
 	if err := cursor.All(context.TODO(), &chats); err != nil {
 		http.Error(w, "Error decoding chats", http.StatusInternalServerError)
 		return
@@ -246,26 +280,60 @@ func (s *Server) FetchChats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) CreateChat(w http.ResponseWriter, r *http.Request) {
-	type Participants struct {
-		IDs []bson.ObjectID `json:"participants"`
-	}
-	var participants Participants
-	err := json.NewDecoder(r.Body).Decode(&participants)
+	userIDStr := r.URL.Query().Get("id")
+	userID, err := bson.ObjectIDFromHex(userIDStr)
 	if err != nil {
-		http.Error(w, "Wrong Request sent", http.StatusBadRequest)
+		http.Error(w, "Wrong ID Format", http.StatusBadRequest)
+		log.Print("Wrong ID Format")
+		return
+	}
+	mobileNumber := r.URL.Query().Get("mobileNumber")
+	otherUserResult := s.UserCollection.FindOne(context.TODO(), bson.M{"mobileNumber": mobileNumber})
+	if otherUserResult.Err() == mongo.ErrNoDocuments {
+		http.Error(w, "No such User Found", http.StatusBadRequest)
+		return
+	}
+	var otherUser User
+	err = otherUserResult.Decode(&otherUser)
+	if err != nil {
+		http.Error(w, "Could not decode result", http.StatusInternalServerError)
+		log.Print("Could not decode result")
 		return
 	}
 
-	newChat := Chat{
+	var participants []bson.ObjectID;
+	participants = append(participants, userID)
+	participants = append(participants, otherUser.ID)
+	otherParticipant := []User{otherUser}
+
+	chatResult := s.ChatCollection.FindOne(context.TODO(), bson.M{"participants": participants})
+	if chatResult.Err() == nil{
+		http.Error(w, "Chat already exists", http.StatusBadRequest)
+		return
+	}
+	
+	newChat := ChatResponse{
 		ID:           bson.NewObjectID(),
-		Participants: participants.IDs,
+		Participants: participants,
+		OtherParticipants: otherParticipant,
 		UpdatedAt:    time.Now(),
 	}
 
 	_, err = s.ChatCollection.InsertOne(context.TODO(), newChat)
 	if err != nil {
 		http.Error(w, "Could not create new chat", http.StatusInternalServerError)
+		return
 	}
+
+	newChatUpdate := Message{
+		ID:         newChat.ID,
+		ChatID:     newChat.ID,
+		SenderID:   userID,
+		ReceiverID: otherUser.ID,
+		Type:       "NEW_CHAT",
+	}
+
+	s.Hub.Broadcast <- newChatUpdate
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(&newChat)
@@ -332,5 +400,46 @@ func (s *Server) DownloadHandler(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "File not Found", http.StatusInternalServerError)
 		return
+	}
+}
+
+func (s *Server) SignUpHandler(w http.ResponseWriter, r *http.Request) {
+	MobileNumber := r.URL.Query().Get("mobileNumber")
+	Name := r.URL.Query().Get("name")
+	filter := bson.M{"mobileNumber": MobileNumber}
+	result := s.UserCollection.FindOne(context.TODO(), filter)
+	if result.Err() == mongo.ErrNoDocuments {
+		user := User{
+			ID:           bson.NewObjectID(),
+			MobileNumber: MobileNumber,
+			Name:         Name,
+		}
+		if _, err := s.UserCollection.InsertOne(context.TODO(), user); err != nil {
+			http.Error(w, "Could not signup, Try Later...", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(&user)
+	} else {
+		http.Error(w, "User already exists login please", http.StatusBadRequest)
+		return
+	}
+}
+
+func (s *Server) LoginHandler(w http.ResponseWriter, r *http.Request) {
+	MobileNumber := r.URL.Query().Get("mobileNumber")
+	filter := bson.M{"mobileNumber": MobileNumber}
+	result := s.UserCollection.FindOne(context.TODO(), filter)
+	if result.Err() == mongo.ErrNoDocuments {
+		http.Error(w, "User does not exist", http.StatusBadRequest)
+		return
+	} else {
+		var user User
+		if err := result.Decode(&user); err != nil {
+			http.Error(w, "Could not decode user", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(&user)
 	}
 }

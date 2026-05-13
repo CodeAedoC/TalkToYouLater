@@ -38,6 +38,7 @@ func main(){
 	bucket = conn.Database("TTYL").GridFSBucket()
 	MessageCollection := conn.Database("TTYL").Collection("Messages")
 	ChatCollection := conn.Database("TTYL").Collection("Chats")
+	UserCollection := conn.Database("TTYL").Collection("Users")
 	
 	redisAddr := os.Getenv("REDIS_ADDR")
 	rdb := redis.NewClient(&redis.Options{
@@ -49,12 +50,15 @@ func main(){
 		Hub: hub,
 		MessageCollection: MessageCollection,
 		ChatCollection: ChatCollection,
+		UserCollection: UserCollection,
 	}
 
 	go hub.ListenToRedis();
 	go hub.Run();
 	mux := http.NewServeMux();
 	mux.HandleFunc("/ws", server.ClientHandler)
+	mux.HandleFunc("/signup", server.SignUpHandler)
+	mux.HandleFunc("/login", server.LoginHandler)
 	mux.HandleFunc("/fetchHistory", server.FetchHistory)
 	mux.HandleFunc("/fetchChats", server.FetchChats)
 	mux.HandleFunc("/createChat", server.CreateChat)
