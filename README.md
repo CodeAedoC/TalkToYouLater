@@ -21,12 +21,16 @@ A full-stack, real-time chat application built with a **Go** backend and a **Rea
 ## Features
 
 - **Authentication** — signup and login by mobile number (no passwords)
-- **Real-time messaging** via WebSockets
+- **Real-time messaging** via a global WebSocket connection
 - **Message status tracking** — `sent` → `delivered` → `read` with double-tick indicators
 - **Paginated chat list** — sorted by most recent activity, load-more support
+- **Contact Search** — filter chat list by name or mobile number
+- **Contact Profiles** — view participant details (name, mobile, status)
+- **"My Notes"** — automatic self-chat for personal notes and reminders
+- **Persistence & Caching** — local storage used for chat list and message history to ensure instant loading
 - **Paginated message history** — oldest-first with infinite scroll upwards
 - **File attachments** — images, videos, and arbitrary files up to 10 MB
-- **Media previews** — inline image/video rendering in the chat window
+- **Media handling** — inline previews and direct browser downloads
 - **New chat notifications** — participants are notified in real-time when a new chat is created
 - **Horizontal scalability** via Redis Pub/Sub; multiple backend instances share message state
 - **Dockerized** — single `docker-compose up` to run the full stack
@@ -111,7 +115,7 @@ Create a new one-on-one chat between the caller and another user. Broadcasts a `
 
 | Query Param    | Type   | Description                        |
 |----------------|--------|------------------------------------|
-| `id`           | string | Creator's MongoDB ObjectID         |
+| `userID`       | string | Creator's MongoDB ObjectID         |
 | `mobileNumber` | string | Target user's phone number         |
 
 **Response:** The newly created `ChatResponse` object (JSON). Returns `400` if a chat between these two users already exists.
@@ -156,7 +160,7 @@ Upload a file attachment (max **10 MB**). Stores the file in MongoDB GridFS.
 ---
 
 #### `GET /download/{id}`
-Stream a file from GridFS by its ObjectID. Used by the frontend to display/download media.
+Stream a file from GridFS by its ObjectID. The frontend uses this to render previews and trigger direct downloads.
 
 | Path Param | Type   | Description             |
 |------------|--------|-------------------------|
@@ -167,18 +171,18 @@ Stream a file from GridFS by its ObjectID. Used by the frontend to display/downl
 ### WebSocket
 
 #### `GET /ws`
-Upgrade to a WebSocket connection scoped to a specific chat.
+Upgrade to a global WebSocket connection for the user. Handles all real-time events across all chats.
 
 | Query Param | Type   | Description                    |
 |-------------|--------|--------------------------------|
 | `userID`    | string | The connected user's ObjectID  |
-| `chatID`    | string | The active chat's ObjectID     |
 
 #### Inbound message (client → server)
 ```json
 {
   "senderId":   "<objectid>",
   "receiverId": "<objectid>",
+  "chatId":     "<objectid>",
   "data":       "Hello!",
   "media":      null,
   "type":       "CHAT"

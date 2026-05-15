@@ -245,6 +245,42 @@ function CreateChatModal({ currentUser, onClose, onCreated, toast }) {
   );
 }
 
+/* ── Profile Modal ────────────────────────────────────────────── */
+function ProfileModal({ chat, myId, onClose }) {
+  const isSelf = isSelfChat(chat, myId);
+  const other = (chat.otherParticipants || []).find(p => p.id !== myId);
+  const name = isSelf ? 'My Notes (Self)' : (other?.name || 'Unknown');
+  const mobile = isSelf ? 'Your Account' : (other?.mobileNumber || 'No mobile linked');
+  const initials = isSelf ? '📝' : avatarLetters(name);
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-card" onClick={e => e.stopPropagation()}>
+        <div className="modal-title">// Node Profile</div>
+        <div className="modal-sub">Secure identification details</div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16, margin: '20px 0' }}>
+          <div className="chat-header-avatar" style={{ width: 64, height: 64, fontSize: 24 }}>{initials}</div>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-1)', letterSpacing: 1 }}>{name}</div>
+            <div style={{ fontSize: 12, color: 'var(--cyan)', marginTop: 4 }}>{mobile}</div>
+          </div>
+        </div>
+
+        <div className="modal-label">Security Protocol</div>
+        <div style={{ fontSize: 10, color: 'var(--text-3)', background: 'var(--surface-2)', padding: 10, borderRadius: 3, border: '1px solid var(--border)' }}>
+          Channel ID: {chat.id}<br />
+          Status: ACTIVE // ENCRYPTED
+        </div>
+
+        <div className="modal-actions">
+          <button className="btn-primary" onClick={onClose}>Close Profile</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ─── Main App ────────────────────────────────────────────────── */
 export default function App() {
   const [currentUser, setCurrentUser] = useState(() => {
@@ -253,9 +289,18 @@ export default function App() {
       return saved ? JSON.parse(saved) : null;
     } catch { return null; }
   }); // { id, name, mobileNumber }
-  const [chats, setChats] = useState([]);
-  const [activeChat, setActiveChat] = useState(null);
-  const [messages, setMessages] = useState([]);
+  const [chats, setChats] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('cachedChats')) || []; }
+    catch { return []; }
+  });
+  const [activeChat, setActiveChat] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('activeChat')) || null; }
+    catch { return null; }
+  });
+  const [messages, setMessages] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('cachedMessages')) || []; }
+    catch { return []; }
+  });
   const [inputText, setInputText] = useState('');
   const [uploading, setUploading] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
@@ -266,16 +311,35 @@ export default function App() {
   const [hasMoreHist, setHasMoreHist] = useState(false);
   const [wsReady, setWsReady] = useState(false);
   const [unreadChats, setUnreadChats] = useState(new Set());
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showProfile, setShowProfile] = useState(false);
 
   const socketRef = useRef(null);      // single WS for the user
   const activeChatRef = useRef(null);
   const messagesEndRef = useRef(null);
+  const lastMessageIdRef = useRef(null);
   const fileInputRef = useRef(null);
   const { toasts, show: toast } = useToast();
 
   const myId = currentUser?.id;
 
-  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  // Persist states
+  useEffect(() => { localStorage.setItem('cachedChats', JSON.stringify(chats)); }, [chats]);
+  useEffect(() => { if (activeChat) localStorage.setItem('activeChat', JSON.stringify(activeChat)); }, [activeChat]);
+  useEffect(() => { localStorage.setItem('cachedMessages', JSON.stringify(messages)); }, [messages]);
+
+  useEffect(() => {
+    if (!messages.length) {
+      lastMessageIdRef.current = null;
+      return;
+    }
+    const lastMsg = messages[messages.length - 1];
+    const lastId = lastMsg.id || lastMsg.sentTime;
+    if (lastMessageIdRef.current !== lastId) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      lastMessageIdRef.current = lastId;
+    }
+  }, [messages]);
   useEffect(() => { activeChatRef.current = activeChat; }, [activeChat]);
 
   /* ── Auth (login / signup) ── */
@@ -305,10 +369,10 @@ export default function App() {
       setChats(sortChats(list, user.id));
       setHasMoreChats(list.length === 20);
 
-      const savedChatID = localStorage.getItem('activeChatID');
+      const savedChat = JSON.parse(localStorage.getItem('activeChat') || 'null');
       let defaultChat = null;
-      if (savedChatID) {
-        defaultChat = list.find(c => c.id === savedChatID);
+      if (savedChat) {
+        defaultChat = list.find(c => c.id === savedChat.id);
       }
       if (!defaultChat) {
         defaultChat = list.find(c =>
@@ -318,7 +382,6 @@ export default function App() {
 
       if (defaultChat) {
         setActiveChat(defaultChat);
-        localStorage.setItem('activeChatID', defaultChat.id);
         try {
           const hr = await fetch(`${API}/fetchHistory?userID=${user.id}&chatID=${defaultChat.id}&limit=30`);
           if (hr.ok) {
@@ -367,7 +430,6 @@ export default function App() {
   /* ── Select chat ── */
   const selectChat = async (chat) => {
     setActiveChat(chat);
-    localStorage.setItem('activeChatID', chat.id);
     setUnreadChats(prev => {
       const ns = new Set(prev);
       ns.delete(chat.id);
@@ -405,6 +467,11 @@ export default function App() {
     const oldest = messages[0];
     const before = encodeURIComponent(new Date(oldest.updatedAt || oldest.sentTime).toISOString());
     setLoadingHist(true);
+
+    const area = document.getElementById('messages-area');
+    const oldScrollHeight = area ? area.scrollHeight : 0;
+    const oldScrollTop = area ? area.scrollTop : 0;
+
     try {
       const res = await fetch(`${API}/fetchHistory?userID=${myId}&chatID=${activeChat.id}&limit=30&before=${before}`);
 
@@ -414,6 +481,13 @@ export default function App() {
       const list = Array.isArray(hist) ? hist.reverse() : [];
       setMessages(prev => [...list, ...prev]);
       setHasMoreHist(list.length === 30);
+
+      setTimeout(() => {
+        const newArea = document.getElementById('messages-area');
+        if (newArea) {
+          newArea.scrollTop = oldScrollTop + (newArea.scrollHeight - oldScrollHeight);
+        }
+      }, 0);
     } catch {
       if (!activeChatRef.current || activeChatRef.current.id === chatAtStart.id) {
         toast('Could not load older messages', 'error');
@@ -423,6 +497,12 @@ export default function App() {
       if (!activeChatRef.current || activeChatRef.current.id === chatAtStart.id) {
         setLoadingHist(false);
       }
+    }
+  };
+
+  const handleScroll = (e) => {
+    if (e.target.scrollTop === 0 && hasMoreHist && !loadingHist) {
+      loadMoreHistory();
     }
   };
 
@@ -450,7 +530,15 @@ export default function App() {
       const msg = JSON.parse(event.data);
       if (msg.type === 'UPDATE_STATUS') {
         if (activeChatRef.current && msg.chatId === activeChatRef.current.id) {
-          refreshHistory(msg.chatId);
+          setMessages(prev => prev.map(m => {
+            const mTime = new Date(m.updatedAt || m.sentTime).getTime();
+            const updateTime = new Date(msg.updatedAt).getTime();
+            if (mTime <= updateTime) {
+              if (msg.status === 'read') return { ...m, status: 'read' };
+              if (msg.status === 'delivered' && m.status !== 'read') return { ...m, status: 'delivered' };
+            }
+            return m;
+          }));
         }
         return;
       }
@@ -472,15 +560,32 @@ export default function App() {
         }
       }
     };
-    ws.onerror = () => toast('WebSocket error', 'error');
+    ws.onerror = () => toast('WebSocket error: Connection failed', 'error');
     ws.onclose = () => { socketRef.current = null; setWsReady(false); };
   }, [myId, refreshChats, refreshHistory, toast]);
 
-  useEffect(() => () => socketRef.current?.close(), []);
-
   useEffect(() => {
-    if (myId) openWS();
-  }, [myId, openWS]);
+    if (myId) {
+      openWS();
+      refreshChats(myId);
+      if (activeChat) {
+        refreshHistory(activeChat.id);
+      }
+    }
+    
+    return () => {
+      if (socketRef.current) {
+        const ws = socketRef.current;
+        if (ws.readyState === 0) { // CONNECTING
+          ws.onopen = () => ws.close();
+        } else if (ws.readyState === 1) { // OPEN
+          ws.close();
+        }
+        socketRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [myId]);
 
   /* ── Send message ── */
   const sendMessage = (mediaPayload = null) => {
@@ -542,6 +647,15 @@ export default function App() {
   const activeName = activeChat ? chatDisplayName(activeChat, myId) : '';
   const activeInitials = avatarLetters(activeName);
 
+  const filteredChats = chats.filter(chat => {
+    if (!searchQuery.trim()) return true;
+    const label = chatDisplayName(chat, myId).toLowerCase();
+    const query = searchQuery.toLowerCase();
+    const other = (chat.otherParticipants || []).find(p => p.id !== myId);
+    const mobile = other?.mobileNumber?.toLowerCase() || '';
+    return label.includes(query) || mobile.includes(query);
+  });
+
   /* ── Main UI ── */
   return (
     <>
@@ -554,16 +668,21 @@ export default function App() {
           </div>
 
           <div className="sidebar-search">
-            <input className="input-field" placeholder="SEARCH USERS..." readOnly style={{ cursor: 'default' }} />
+            <input
+              className="input-field"
+              placeholder="SEARCH USERS..."
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+            />
           </div>
 
           <div className="chat-list">
-            {chats.length === 0 && (
+            {filteredChats.length === 0 && (
               <div style={{ padding: 20, textAlign: 'center', color: 'var(--text-3)', fontSize: 10, letterSpacing: 1, textTransform: 'uppercase' }}>
-                No nodes detected — initiate link
+                No nodes detected
               </div>
             )}
-            {chats.map(chat => {
+            {filteredChats.map(chat => {
               const label = chatDisplayName(chat, myId);
               const self = isSelfChat(chat, myId);
               const initials = self ? '📝' : avatarLetters(label);
@@ -640,20 +759,16 @@ export default function App() {
                 <div className="header-actions">
                   <button className="header-icon-btn" title="Voice">📞</button>
                   <button className="header-icon-btn" title="Video">📹</button>
-                  <button className="header-icon-btn" title="Profile">👤</button>
+                  <button className="header-icon-btn" title="Profile" onClick={() => setShowProfile(true)}>👤</button>
                   <button className="header-icon-btn" title="More">⋮</button>
                 </div>
               </div>
 
               {/* Messages */}
-              <div className="messages-area" id="messages-area">
-                {hasMoreHist && (
-                  <div className="load-more-hist">
-                    <button onClick={loadMoreHistory} disabled={loadingHist}>
-                      {loadingHist
-                        ? <div className="spinner" style={{ width: 12, height: 12, display: 'inline-block' }} />
-                        : '↑ Load older transmissions'}
-                    </button>
+              <div className="messages-area" id="messages-area" onScroll={handleScroll}>
+                {loadingHist && messages.length > 0 && (
+                  <div style={{ textAlign: 'center', padding: 10 }}>
+                    <div className="spinner" style={{ width: 16, height: 16, display: 'inline-block' }} />
                   </div>
                 )}
 
@@ -733,6 +848,13 @@ export default function App() {
           onClose={() => setShowCreate(false)}
           onCreated={handleChatCreated}
           toast={toast}
+        />
+      )}
+      {showProfile && activeChat && (
+        <ProfileModal
+          chat={activeChat}
+          myId={myId}
+          onClose={() => setShowProfile(false)}
         />
       )}
       <Toasts toasts={toasts} />
