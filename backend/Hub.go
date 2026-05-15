@@ -11,7 +11,7 @@ import (
 
 type Hub struct {
 	ActiveClientList map[bson.ObjectID]map[*Client]bool
-	RedisClient 	 *redis.Client
+	RedisClient      *redis.Client
 	Join             chan *Client
 	Leave            chan *Client
 	Broadcast        chan Message
@@ -41,17 +41,17 @@ func (h *Hub) Run() {
 	}
 }
 
-func (h *Hub) ListenToRedis(){
+func (h *Hub) ListenToRedis() {
 	pubsub := h.RedisClient.Subscribe(context.TODO(), "chat_room")
 	defer pubsub.Close()
 
 	ch := pubsub.Channel()
-	for msg := range ch{
+	for msg := range ch {
 		var message Message
 		json.Unmarshal([]byte(msg.Payload), &message)
 
-		if clients, ok := h.ActiveClientList[message.ReceiverID]; ok{
-			for client := range clients{
+		if clients, ok := h.ActiveClientList[message.ReceiverID]; ok {
+			for client := range clients {
 				client.Send <- message
 			}
 		}

@@ -22,17 +22,18 @@ type Server struct {
 }
 
 type ChatResponse struct {
-		ID                bson.ObjectID   `json:"id"`
-		Participants      []bson.ObjectID `json:"participants"`
-		OtherParticipants []User          `json:"otherParticipants"`
-		LastMessage       *Message        `json:"lastMessage"`
-		UpdatedAt         time.Time       `json:"updatedAt"`
+	ID                bson.ObjectID   `json:"id" bson:"_id"`
+	Participants      []bson.ObjectID `json:"participants" bson:"participants"`
+	OtherParticipants []User          `json:"otherParticipants" bson:"otherParticipants"`
+	LastMessage       *Message        `json:"lastMessage" bson:"lastMessage"`
+	UpdatedAt         time.Time       `json:"updatedAt" bson:"updatedAt"`
+}
+
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
 func (s *Server) ClientHandler(w http.ResponseWriter, r *http.Request) {
-	upgrader := websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool { return true },
-	}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Println("Could not establish connection")
@@ -41,12 +42,7 @@ func (s *Server) ClientHandler(w http.ResponseWriter, r *http.Request) {
 	clientIDStr := r.URL.Query().Get("userID")
 	clientID, err := bson.ObjectIDFromHex(clientIDStr)
 	if err != nil {
-		log.Println("Wrong User ID Format")
-		return
-	}
-	chatIDStr := r.URL.Query().Get("chatID")
-	chatID, err := bson.ObjectIDFromHex(chatIDStr)
-	if err != nil {
+		http.Error(w, "Wrong User ID provided", http.StatusBadRequest)
 		log.Println("Wrong User ID Format")
 		return
 	}
@@ -54,7 +50,6 @@ func (s *Server) ClientHandler(w http.ResponseWriter, r *http.Request) {
 	client := &Client{
 		ID:                clientID,
 		Conn:              conn,
-		ActiveChatID:      chatID,
 		Send:              make(chan Message),
 		Hub:               s.Hub,
 		MessageCollection: s.MessageCollection,
@@ -280,7 +275,7 @@ func (s *Server) FetchChats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) CreateChat(w http.ResponseWriter, r *http.Request) {
-	userIDStr := r.URL.Query().Get("id")
+	userIDStr := r.URL.Query().Get("userID")
 	userID, err := bson.ObjectIDFromHex(userIDStr)
 	if err != nil {
 		http.Error(w, "Wrong ID Format", http.StatusBadRequest)
@@ -301,21 +296,25 @@ func (s *Server) CreateChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var participants []bson.ObjectID;
+	var participants []bson.ObjectID
 	participants = append(participants, userID)
 	participants = append(participants, otherUser.ID)
 	otherParticipant := []User{otherUser}
 
-	chatResult := s.ChatCollection.FindOne(context.TODO(), bson.M{"participants": participants})
-	if chatResult.Err() == nil{
+	filter := bson.M{"participants": bson.M{
+		"$all":  participants,
+		"$size": len(participants),
+	}}
+
+	chatResult := s.ChatCollection.FindOne(context.TODO(), filter)
+	if chatResult.Err() == nil {
 		http.Error(w, "Chat already exists", http.StatusBadRequest)
 		return
 	}
-	
-	newChat := ChatResponse{
+
+	newChat := Chat{
 		ID:           bson.NewObjectID(),
 		Participants: participants,
-		OtherParticipants: otherParticipant,
 		UpdatedAt:    time.Now(),
 	}
 
@@ -335,8 +334,15 @@ func (s *Server) CreateChat(w http.ResponseWriter, r *http.Request) {
 
 	s.Hub.Broadcast <- newChatUpdate
 
+	newChatResponse := ChatResponse{
+		ID:                newChat.ID,
+		Participants:      participants,
+		OtherParticipants: otherParticipant,
+		UpdatedAt:         newChat.UpdatedAt,
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(&newChat)
+	json.NewEncoder(w).Encode(&newChatResponse)
 }
 
 func (s *Server) UploadHandler(w http.ResponseWriter, r *http.Request) {

@@ -2,11 +2,17 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import './App.css';
 
 const API = import.meta.env.VITE_API_URL;
-const WS  = import.meta.env.VITE_WS_URL;
+const WS = import.meta.env.VITE_WS_URL;
 
 /* ─── Helpers ─────────────────────────────────────────────────── */
-function sortChats(list) {
-  return [...list].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+function sortChats(list, myId) {
+  return [...list].sort((a, b) => {
+    const aIsSelf = isSelfChat(a, myId);
+    const bIsSelf = isSelfChat(b, myId);
+    if (aIsSelf && !bIsSelf) return -1;
+    if (!aIsSelf && bIsSelf) return 1;
+    return new Date(b.updatedAt) - new Date(a.updatedAt);
+  });
 }
 function fmtTime(iso) {
   if (!iso) return '';
@@ -31,7 +37,12 @@ function isImage(name = '') { return /\.(jpg|jpeg|png|gif|webp|svg)$/i.test(name
 function isVideo(name = '') { return /\.(mp4|webm|ogg|mov)$/i.test(name); }
 
 /* Get display name from otherParticipants or fall back to ID slice */
+function isSelfChat(chat, myId) {
+  const others = (chat.otherParticipants || []).filter(p => p.id !== myId);
+  return others.length === 0;
+}
 function chatDisplayName(chat, myId) {
+  if (isSelfChat(chat, myId)) return '📝 My Notes';
   const others = (chat.otherParticipants || []).filter(p => p.id !== myId);
   if (others.length > 0) return others[0].name || others[0].mobileNumber || others[0].id?.slice(-8).toUpperCase();
   // fallback: participants array of IDs
@@ -66,14 +77,14 @@ function Toasts({ toasts }) {
 /* ─── Status tick ──────────────────────────────────────────────── */
 function StatusTick({ status }) {
   if (!status) return null;
-  if (status === 'sent')      return <span className="msg-status sent"     title="Sent">✓</span>;
+  if (status === 'sent') return <span className="msg-status sent" title="Sent">✓</span>;
   if (status === 'delivered') return <span className="msg-status delivered" title="Delivered">✓✓</span>;
-  if (status === 'read')      return <span className="msg-status read"      title="Read">✓✓</span>;
+  if (status === 'read') return <span className="msg-status read" title="Read" style={{ color: '#34b7f1' }}>✓✓</span>;
   return null;
 }
 
-/* ─── Media renderer ──────────────────────────────────────────── */
-async function downloadMedia(url, fileName) {
+/* ─── Force download via blob (works cross-origin) ───────────── */
+async function downloadFile(url, fileName) {
   try {
     const res = await fetch(url);
     const blob = await res.blob();
@@ -81,49 +92,48 @@ async function downloadMedia(url, fileName) {
     a.href = URL.createObjectURL(blob);
     a.download = fileName;
     a.click();
-    URL.revokeObjectURL(a.href);
-  } catch {
-    // fallback: open in new tab
-    window.open(url, '_blank');
-  }
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  } catch { /* ignore */ }
 }
 
+/* ─── Media renderer ──────────────────────────────────────────── */
 function MediaBlock({ media }) {
   if (!media) return null;
   const url = `${API}${media.url}`;
-
+  const dlBtn = (
+    <button
+      className="media-dl-btn"
+      title="Download"
+      onClick={() => downloadFile(url, media.fileName)}
+    >⬇</button>
+  );
   if (isImage(media.fileName)) return (
     <div className="media-img-wrap">
       <img className="media-img" src={url} alt={media.fileName} />
-      <button
-        className="media-dl-btn"
-        title="Download image"
-        onClick={() => downloadMedia(url, media.fileName)}
-      >⬇ Download</button>
+      {dlBtn}
     </div>
   );
-
   if (isVideo(media.fileName)) return (
-    <div style={{ marginTop: 6 }}>
-      <video controls style={{ maxWidth: 240, borderRadius: 3, display: 'block', border: '1px solid rgba(0,229,255,0.2)' }}>
+    <div className="media-img-wrap">
+      <video controls style={{ maxWidth: 240, borderRadius: 3, marginTop: 6, display: 'block', border: '1px solid rgba(0,229,255,0.2)' }}>
         <source src={url} />
       </video>
-      <button
-        className="media-dl-btn media-dl-btn--video"
-        title="Download video"
-        onClick={() => downloadMedia(url, media.fileName)}
-      >⬇ Download</button>
+      {dlBtn}
     </div>
   );
-
   return (
-    <a className="media-file-link" href={url} target="_blank" rel="noreferrer" download={media.fileName}>
+    <div
+      className="media-file-link"
+      onClick={() => downloadFile(url, media.fileName)}
+      style={{ cursor: 'pointer' }}
+    >
       <span className="media-icon">📎</span>
       <span className="media-meta">
         <span className="media-name">{media.fileName}</span>
         <span className="media-size">{fmtFileSize(media.fileSize)}</span>
       </span>
-    </a>
+      <span className="media-dl-btn" title="Download">⬇</span>
+    </div>
   );
 }
 
@@ -195,7 +205,7 @@ function CreateChatModal({ currentUser, onClose, onCreated, toast }) {
     setLoading(true);
     try {
       const res = await fetch(
-        `${API}/createChat?id=${encodeURIComponent(currentUser.id)}&mobileNumber=${encodeURIComponent(trimmed)}`
+        `${API}/createChat?userID=${encodeURIComponent(currentUser.id)}&mobileNumber=${encodeURIComponent(trimmed)}`
       );
       if (!res.ok) throw new Error(await res.text());
       const chat = await res.json();
@@ -237,28 +247,36 @@ function CreateChatModal({ currentUser, onClose, onCreated, toast }) {
 
 /* ─── Main App ────────────────────────────────────────────────── */
 export default function App() {
-  const [currentUser, setCurrentUser] = useState(null); // { id, name, mobileNumber }
-  const [chats, setChats]             = useState([]);
-  const [activeChat, setActiveChat]   = useState(null);
-  const [messages, setMessages]       = useState([]);
-  const [inputText, setInputText]     = useState('');
-  const [uploading, setUploading]     = useState(false);
-  const [showCreate, setShowCreate]   = useState(false);
+  const [currentUser, setCurrentUser] = useState(() => {
+    try {
+      const saved = localStorage.getItem('currentUser');
+      return saved ? JSON.parse(saved) : null;
+    } catch { return null; }
+  }); // { id, name, mobileNumber }
+  const [chats, setChats] = useState([]);
+  const [activeChat, setActiveChat] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [inputText, setInputText] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
   const [loadingAuth, setLoadingAuth] = useState(false);
   const [loadingChats, setLoadingChats] = useState(false);
-  const [loadingHist, setLoadingHist]   = useState(false);
+  const [loadingHist, setLoadingHist] = useState(false);
   const [hasMoreChats, setHasMoreChats] = useState(false);
-  const [hasMoreHist, setHasMoreHist]   = useState(false);
-  const [wsReady, setWsReady]           = useState(false);
+  const [hasMoreHist, setHasMoreHist] = useState(false);
+  const [wsReady, setWsReady] = useState(false);
+  const [unreadChats, setUnreadChats] = useState(new Set());
 
-  const socketRef      = useRef(null);
+  const socketRef = useRef(null);      // single WS for the user
+  const activeChatRef = useRef(null);
   const messagesEndRef = useRef(null);
-  const fileInputRef   = useRef(null);
+  const fileInputRef = useRef(null);
   const { toasts, show: toast } = useToast();
 
   const myId = currentUser?.id;
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  useEffect(() => { activeChatRef.current = activeChat; }, [activeChat]);
 
   /* ── Auth (login / signup) ── */
   const handleAuth = async (mode, mobile, name) => {
@@ -272,14 +290,44 @@ export default function App() {
       if (!res.ok) throw new Error(await res.text());
       const user = await res.json();
       setCurrentUser(user);
+      localStorage.setItem('currentUser', JSON.stringify(user));
+
+      // Ensure self-chat exists (ignore "already exists" error — that's fine)
+      await fetch(
+        `${API}/createChat?userID=${encodeURIComponent(user.id)}&mobileNumber=${encodeURIComponent(user.mobileNumber)}`
+      );
 
       // Fetch chats after auth
       const cr = await fetch(`${API}/fetchChats?userID=${user.id}&limit=20`);
       if (!cr.ok) throw new Error(await cr.text());
       const data = await cr.json();
       const list = Array.isArray(data) ? data : [];
-      setChats(sortChats(list));
+      setChats(sortChats(list, user.id));
       setHasMoreChats(list.length === 20);
+
+      const savedChatID = localStorage.getItem('activeChatID');
+      let defaultChat = null;
+      if (savedChatID) {
+        defaultChat = list.find(c => c.id === savedChatID);
+      }
+      if (!defaultChat) {
+        defaultChat = list.find(c =>
+          (c.otherParticipants || []).filter(p => p.id !== user.id).length === 0
+        );
+      }
+
+      if (defaultChat) {
+        setActiveChat(defaultChat);
+        localStorage.setItem('activeChatID', defaultChat.id);
+        try {
+          const hr = await fetch(`${API}/fetchHistory?userID=${user.id}&chatID=${defaultChat.id}&limit=30`);
+          if (hr.ok) {
+            const hist = await hr.json();
+            setMessages(Array.isArray(hist) ? hist.reverse() : []);
+          }
+        } catch { /* ignore */ }
+      }
+
       toast(`Welcome, ${user.name}!`, 'success');
     } catch (e) {
       toast(e.message, 'error');
@@ -295,7 +343,7 @@ export default function App() {
       if (!res.ok) return;
       const data = await res.json();
       const list = Array.isArray(data) ? data : [];
-      setChats(sortChats(list));
+      setChats(sortChats(list, userId));
       setHasMoreChats(list.length === 20);
     } catch { /* silently ignore */ }
   }, []);
@@ -310,7 +358,7 @@ export default function App() {
       const res = await fetch(`${API}/fetchChats?userID=${myId}&limit=20&before=${before}`);
       const data = await res.json();
       const list = Array.isArray(data) ? data : [];
-      setChats(prev => sortChats([...prev, ...list]));
+      setChats(prev => sortChats([...prev, ...list], myId));
       setHasMoreChats(list.length === 20);
     } catch { toast('Could not load more chats', 'error'); }
     finally { setLoadingChats(false); }
@@ -319,63 +367,120 @@ export default function App() {
   /* ── Select chat ── */
   const selectChat = async (chat) => {
     setActiveChat(chat);
+    localStorage.setItem('activeChatID', chat.id);
+    setUnreadChats(prev => {
+      const ns = new Set(prev);
+      ns.delete(chat.id);
+      return ns;
+    });
     setMessages([]);
     setHasMoreHist(false);
-    if (socketRef.current) { socketRef.current.close(); socketRef.current = null; setWsReady(false); }
     setLoadingHist(true);
     try {
       const res = await fetch(`${API}/fetchHistory?userID=${myId}&chatID=${chat.id}&limit=30`);
       if (!res.ok) throw new Error(await res.text());
       const hist = await res.json();
+
+      if (activeChatRef.current && activeChatRef.current.id !== chat.id) return;
+
       const list = Array.isArray(hist) ? hist.reverse() : [];
       setMessages(list);
       setHasMoreHist(list.length === 30);
-    } catch (e) { toast(`History error: ${e.message}`, 'error'); }
-    finally { setLoadingHist(false); }
-    openWS(chat);
+    } catch (e) {
+      if (!activeChatRef.current || activeChatRef.current.id === chat.id) {
+        toast(`History error: ${e.message}`, 'error');
+      }
+    }
+    finally {
+      if (!activeChatRef.current || activeChatRef.current.id === chat.id) {
+        setLoadingHist(false);
+      }
+    }
   };
 
   /* ── Load more history ── */
   const loadMoreHistory = async () => {
     if (!activeChat || !messages.length) return;
+    const chatAtStart = activeChat;
     const oldest = messages[0];
     const before = encodeURIComponent(new Date(oldest.updatedAt || oldest.sentTime).toISOString());
     setLoadingHist(true);
     try {
       const res = await fetch(`${API}/fetchHistory?userID=${myId}&chatID=${activeChat.id}&limit=30&before=${before}`);
+
+      if (activeChatRef.current && activeChatRef.current.id !== chatAtStart.id) return;
+
       const hist = await res.json();
       const list = Array.isArray(hist) ? hist.reverse() : [];
       setMessages(prev => [...list, ...prev]);
       setHasMoreHist(list.length === 30);
-    } catch { toast('Could not load older messages', 'error'); }
-    finally { setLoadingHist(false); }
+    } catch {
+      if (!activeChatRef.current || activeChatRef.current.id === chatAtStart.id) {
+        toast('Could not load older messages', 'error');
+      }
+    }
+    finally {
+      if (!activeChatRef.current || activeChatRef.current.id === chatAtStart.id) {
+        setLoadingHist(false);
+      }
+    }
   };
 
   /* ── WebSocket ── */
-  const openWS = useCallback((chat) => {
-    if (socketRef.current) return;
-    const ws = new WebSocket(`${WS}/ws?userID=${myId}&chatID=${chat.id}`);
+  const refreshHistory = useCallback(async (chatId) => {
+    if (!myId) return;
+    try {
+      const res = await fetch(`${API}/fetchHistory?userID=${myId}&chatID=${chatId}&limit=30`);
+      if (!res.ok) return;
+      const hist = await res.json();
+      if (activeChatRef.current && activeChatRef.current.id === chatId) {
+        const list = Array.isArray(hist) ? hist.reverse() : [];
+        setMessages(list);
+        setHasMoreHist(list.length === 30);
+      }
+    } catch { /* silently ignore */ }
+  }, [myId]);
+
+  const openWS = useCallback(() => {
+    if (socketRef.current || !myId) return;
+    const ws = new WebSocket(`${WS}/ws?userID=${myId}`);
     socketRef.current = ws;
     ws.onopen = () => setWsReady(true);
     ws.onmessage = (event) => {
       const msg = JSON.parse(event.data);
       if (msg.type === 'UPDATE_STATUS') {
-        setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, status: msg.status } : m));
+        if (activeChatRef.current && msg.chatId === activeChatRef.current.id) {
+          refreshHistory(msg.chatId);
+        }
         return;
       }
       if (msg.type === 'NEW_CHAT') {
-        // Someone created a chat with us — refresh the sidebar
         refreshChats(myId);
         toast('New chat initiated!', 'info');
         return;
       }
-      setMessages(prev => [...prev, msg]);
+      if (msg.type === 'CHAT') {
+        refreshChats(myId);
+        if (activeChatRef.current && msg.chatId === activeChatRef.current.id) {
+          refreshHistory(msg.chatId);
+        } else {
+          setUnreadChats(prev => {
+            const ns = new Set(prev);
+            ns.add(msg.chatId);
+            return ns;
+          });
+        }
+      }
     };
     ws.onerror = () => toast('WebSocket error', 'error');
     ws.onclose = () => { socketRef.current = null; setWsReady(false); };
-  }, [myId, refreshChats]);
+  }, [myId, refreshChats, refreshHistory, toast]);
 
   useEffect(() => () => socketRef.current?.close(), []);
+
+  useEffect(() => {
+    if (myId) openWS();
+  }, [myId, openWS]);
 
   /* ── Send message ── */
   const sendMessage = (mediaPayload = null) => {
@@ -383,14 +488,15 @@ export default function App() {
     if (!inputText.trim() && !mediaPayload) return;
     const ensureWS = (cb) => {
       if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) cb();
-      else { openWS(activeChat); setTimeout(cb, 150); }
+      else { openWS(); setTimeout(cb, 150); }
     };
     ensureWS(() => {
       if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN)
         return toast('Not connected, please retry', 'error');
-      const receiverId = (activeChat.participants || []).find(p => p !== myId) || '';
+      // For self-chat both participants are myId; use myId so the message loops back
+      const receiverId = (activeChat.participants || []).find(p => p !== myId) || myId;
       const payload = {
-        senderId: myId, receiverId,
+        senderId: myId, receiverId, chatId: activeChat.id,
         data: mediaPayload ? `📎 ${mediaPayload.fileName}` : inputText.trim(),
         media: mediaPayload || null,
         type: 'CHAT',
@@ -418,7 +524,7 @@ export default function App() {
   };
 
   const handleChatCreated = (chat) => {
-    setChats(prev => sortChats([chat, ...prev]));
+    setChats(prev => sortChats([chat, ...prev], myId));
     selectChat(chat);
   };
 
@@ -433,7 +539,7 @@ export default function App() {
   }
 
   /* ── Derived display values ── */
-  const activeName   = activeChat ? chatDisplayName(activeChat, myId) : '';
+  const activeName = activeChat ? chatDisplayName(activeChat, myId) : '';
   const activeInitials = avatarLetters(activeName);
 
   /* ── Main UI ── */
@@ -458,25 +564,34 @@ export default function App() {
               </div>
             )}
             {chats.map(chat => {
-              const label    = chatDisplayName(chat, myId);
-              const initials = avatarLetters(label);
-              const other    = (chat.otherParticipants || []).find(p => p.id !== myId);
+              const label = chatDisplayName(chat, myId);
+              const self = isSelfChat(chat, myId);
+              const initials = self ? '📝' : avatarLetters(label);
+              const other = (chat.otherParticipants || []).find(p => p.id !== myId);
               return (
                 <div
                   key={chat.id}
                   id={`chat-${chat.id}`}
-                  className={`chat-item ${activeChat?.id === chat.id ? 'active' : ''}`}
+                  className={`chat-item ${activeChat?.id === chat.id ? 'active' : ''} ${self ? 'self-chat' : ''}`}
                   onClick={() => selectChat(chat)}
                 >
-                  <div className="chat-avatar">
+                  <div className="chat-avatar" style={self ? { background: 'linear-gradient(135deg, #7c3aed, #a855f7)', fontSize: 16 } : {}}>
                     {initials}
                     <span className="avatar-dot online" />
+                    {unreadChats.has(chat.id) && (
+                      <span style={{ position: 'absolute', top: -2, right: -2, background: 'var(--accent, #ff3b30)', color: 'white', fontSize: 10, borderRadius: '50%', width: 14, height: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold' }}>!</span>
+                    )}
                   </div>
                   <div className="chat-info">
                     <div className="chat-name">{label}</div>
                     <div className="chat-last">
-                      {other?.mobileNumber && <span style={{ opacity: 0.5, fontSize: 9, marginRight: 4 }}>{other.mobileNumber}</span>}
-                      {chat.lastMessage?.data || 'no transmissions.'}
+                      {self
+                        ? <span style={{ opacity: 0.6, fontStyle: 'italic' }}>Your personal notes &amp; reminders</span>
+                        : <>
+                          {other?.mobileNumber && <span style={{ opacity: 0.5, fontSize: 9, marginRight: 4 }}>{other.mobileNumber}</span>}
+                          {chat.lastMessage?.data || 'no transmissions.'}
+                        </>
+                      }
                     </div>
                   </div>
                   <div className="chat-meta">
@@ -549,7 +664,7 @@ export default function App() {
                 )}
 
                 {messages.map((msg, idx) => {
-                  const isMe    = msg.senderId === myId;
+                  const isMe = msg.senderId === myId;
                   const prevMsg = messages[idx - 1];
                   const showDate = !prevMsg ||
                     fmtDate(msg.sentTime || msg.updatedAt) !== fmtDate(prevMsg.sentTime || prevMsg.updatedAt);
