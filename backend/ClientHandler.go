@@ -116,6 +116,7 @@ func (s *Server) FetchHistory(w http.ResponseWriter, r *http.Request) {
 				ChatID:     message.ChatID,
 				SenderID:   message.ReceiverID,
 				ReceiverID: message.SenderID,
+				UpdatedAt:  time.Now(),
 				Status:     "read",
 				Type:       "UPDATE_STATUS",
 			}
@@ -237,12 +238,14 @@ func (s *Server) FetchChats(w http.ResponseWriter, r *http.Request) {
 
 	if message.ReceiverID == userID && message.Status == "sent" {
 		updateStatus := Message{
-			ID:         message.ID,
-			ChatID:     message.ChatID,
-			SenderID:   message.ReceiverID,
-			ReceiverID: message.SenderID,
-			Status:     "delivered",
-			Type:       "UPDATE_STATUS",
+			ID:           message.ID,
+			ChatID:       message.ChatID,
+			SenderID:     message.ReceiverID,
+			ReceiverID:   message.SenderID,
+			ReceivedTime: time.Now(),
+			UpdatedAt:    time.Now(),
+			Status:       "delivered",
+			Type:         "UPDATE_STATUS",
 		}
 		s.Hub.Broadcast <- updateStatus
 	}
